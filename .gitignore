@@ -13,3 +13,4 @@ dist/
 .vercel/
 .DS_Store
 *.log
+.vscode/

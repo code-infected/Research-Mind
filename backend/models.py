@@ -62,6 +62,12 @@ class ResearchSession(Base):
     user = relationship("User", back_populates="sessions")
     report = relationship("Report", back_populates="session", uselist=False)
 
+    def _duration_seconds(self) -> int | None:
+        """Calculate duration of research session in seconds."""
+        if self.completed_at and self.created_at:
+            return int((self.completed_at - self.created_at).total_seconds())
+        return None
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -71,6 +77,7 @@ class ResearchSession(Base):
             "sub_questions": self.sub_questions or [],
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "duration_seconds": self._duration_seconds(),
             "report": self.report.to_dict() if self.report else None,
         }
 
@@ -79,10 +86,11 @@ class ResearchSession(Base):
             "id": self.id,
             "topic": self.topic,
             "status": self.status,
-            "sources_cited": self.report.sources_cited if self.report else 0,
-            "word_count": self.report.word_count if self.report else 0,
+            "sources_cited": getattr(self.report, "sources_cited", 0) if self.report else 0,
+            "word_count": getattr(self.report, "word_count", 0) if self.report else 0,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "duration_seconds": self._duration_seconds(),
         }
 
 

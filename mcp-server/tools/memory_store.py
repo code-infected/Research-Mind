@@ -3,10 +3,14 @@ memory_store.py — ChromaDB semantic memory for ResearchMind MCP Server.
 
 Provides read/write/query operations on a ChromaDB vector store.
 Used by the agent to save research findings and retrieve them later
-for synthesis. Enables semantic search across all accumulated knowledge.
+for synthesis. Supports session-scoped storage to prevent cross-session bleed.
 """
 
 import os
+
+# Disable ChromaDB telemetry before importing
+os.environ["ANONYMIZED_TELEMETRY"] = "FALSE"
+
 import uuid
 import chromadb
 from typing import Optional
@@ -14,30 +18,41 @@ from typing import Optional
 
 # Module-level client (initialized lazily)
 _client: Optional[chromadb.ClientAPI] = None
-_collection = None
+_collections: dict = {}
 
-COLLECTION_NAME = "research_findings"
+COLLECTION_PREFIX = "research_findings"
 
 
-def _get_collection():
-    """Get or create the ChromaDB collection (lazy initialization)."""
-    global _client, _collection
+def _get_collection_name(session_id: str = "default") -> str:
+    """Generate a session-scoped collection name."""
+    safe_id = session_id.replace("-", "_")[:16]
+    return f"{COLLECTION_PREFIX}_{safe_id}"
 
-    if _collection is None:
-        db_path = os.getenv("CHROMA_DB_PATH", "./chroma_data")
-        _client = chromadb.PersistentClient(path=db_path)
-        _collection = _client.get_or_create_collection(
-            name=COLLECTION_NAME,
+
+def _get_collection(session_id: str = "default"):
+    """Get or create a session-scoped ChromaDB collection (lazy initialization)."""
+    global _client, _collections
+
+    collection_name = _get_collection_name(session_id)
+
+    if collection_name not in _collections:
+        if _client is None:
+            db_path = os.getenv("CHROMA_DB_PATH", "./chroma_data")
+            _client = chromadb.PersistentClient(path=db_path)
+
+        _collections[collection_name] = _client.get_or_create_collection(
+            name=collection_name,
             metadata={"hnsw:space": "cosine"},
         )
 
-    return _collection
+    return _collections[collection_name]
 
 
 async def store(
     content: str,
     metadata: Optional[dict] = None,
     doc_id: Optional[str] = None,
+    session_id: str = "default",
 ) -> dict:
     """
     Store a piece of information in the vector memory.
@@ -46,11 +61,12 @@ async def store(
         content: The text content to store.
         metadata: Optional metadata dict (e.g., source URL, topic, type).
         doc_id: Optional custom document ID. Auto-generated if not provided.
+        session_id: Session ID for scoping (default "default").
 
     Returns:
         A dict with keys: id, stored (bool), content_length.
     """
-    collection = _get_collection()
+    collection = _get_collection(session_id)
 
     if not doc_id:
         doc_id = str(uuid.uuid4())
@@ -83,6 +99,7 @@ async def query(
     query_text: str,
     max_results: int = 5,
     filter_metadata: Optional[dict] = None,
+    session_id: str = "default",
 ) -> list[dict]:
     """
     Search the memory store using semantic similarity.
@@ -91,12 +108,13 @@ async def query(
         query_text: The text to search for (semantic similarity).
         max_results: Maximum number of results to return (default 5).
         filter_metadata: Optional metadata filter dict (ChromaDB where clause).
+        session_id: Session ID for scoping (default "default").
 
     Returns:
         A list of dicts with keys: id, content, metadata, distance.
         Results are sorted by relevance (lowest distance = most similar).
     """
-    collection = _get_collection()
+    collection = _get_collection(session_id)
 
     if collection.count() == 0:
         return []
@@ -144,23 +162,33 @@ async def delete(doc_id: str) -> dict:
         return {"id": doc_id, "deleted": False, "error": str(e)}
 
 
-async def get_stats() -> dict:
+async def get_stats(session_id: str = "default") -> dict:
     """
     Get memory store statistics.
+
+    Args:
+        session_id: Session ID for scoping (default "default").
 
     Returns:
         A dict with keys: collection_name, document_count.
     """
-    collection = _get_collection()
+    collection = _get_collection(session_id)
 
     return {
-        "collection_name": COLLECTION_NAME,
+        "collection_name": _get_collection_name(session_id),
         "document_count": collection.count(),
     }
 
 
-def reset_collection():
-    """Reset the in-memory references (useful for testing)."""
-    global _client, _collection
-    _collection = None
-    _client = None
+def reset_collection(session_id: str = "default"):
+    """Drop the session collection and remove from cache."""
+    global _client, _collections
+
+    collection_name = _get_collection_name(session_id)
+
+    if _client is not None and collection_name in _collections:
+        try:
+            _client.delete_collection(name=collection_name)
+        except Exception:
+            pass
+        del _collections[collection_name]

@@ -50,7 +50,7 @@
 
 ```bash
 # Clone the repo
-git clone https://github.com/yourusername/researchmind.git
+git clone https://github.com/your-username/researchmind.git
 cd researchmind
 
 # Copy env and add your keys

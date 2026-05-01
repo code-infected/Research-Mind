@@ -172,8 +172,8 @@ async def summarize_content(
     """
     Summarize long content into concise key points.
 
-    Uses Gemini 2.0 Flash (free tier) for summarization, with an extractive
-    fallback if no API key is configured.
+    Uses the configured LLM provider (via LiteLLM) for summarization, with an extractive
+    fallback if the LLM call fails.
 
     Args:
         content: The text to summarize.
@@ -288,7 +288,7 @@ async def cite_source(
 
 
 @mcp.tool()
-async def get_bibliography(format: str = "markdown") -> str:
+async def get_bibliography(format: str = "markdown", session_id: str = "default") -> str:
     """
     Generate a formatted bibliography of all tracked sources.
 
@@ -297,13 +297,14 @@ async def get_bibliography(format: str = "markdown") -> str:
 
     Args:
         format: Output format — 'markdown' or 'plain'.
+        session_id: The research session identifier.
 
     Returns a formatted bibliography string.
     """
     from tools.citation_tracker import get_bibliography as _get_bib
 
     try:
-        result = await _get_bib(format)
+        result = await _get_bib(format, session_id=session_id)
         return result
     except Exception as e:
         return json.dumps({"error": str(e), "tool": "get_bibliography"})

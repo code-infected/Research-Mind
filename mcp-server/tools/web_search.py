@@ -39,7 +39,7 @@ async def search(
         
         # The Tavily wrapper may be synchronous, running it in async context
         import asyncio
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         response = await loop.run_in_executor(
             None,
             lambda: client.search(query, max_results=max_results)
@@ -57,7 +57,7 @@ async def search(
         # Fallback to DuckDuckGo
         # DDGS is synchronous in its core text method
         import asyncio
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         
         def _ddgs_search():
             with DDGS() as ddg:

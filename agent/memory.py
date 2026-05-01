@@ -20,6 +20,7 @@ async def save_finding(
     source_url: str = "",
     source_title: str = "",
     source_type: str = "web",
+    session_id: str = "default",
 ) -> dict:
     """
     Save a research finding with standard metadata.
@@ -30,6 +31,7 @@ async def save_finding(
         source_url: URL of the source.
         source_title: Title of the source.
         source_type: Type of source ('web', 'arxiv', 'pdf').
+        session_id: Session ID for scoping.
 
     Returns:
         Storage confirmation dict.
@@ -41,13 +43,14 @@ async def save_finding(
         "source_type": source_type,
     }
 
-    return await store(content=content, metadata=metadata)
+    return await store(content=content, metadata=metadata, session_id=session_id)
 
 
 async def retrieve_findings(
     query_text: str,
     max_results: int = 5,
     source_type: str = None,
+    session_id: str = "default",
 ) -> list[dict]:
     """
     Retrieve relevant findings from memory.
@@ -56,6 +59,7 @@ async def retrieve_findings(
         query_text: Semantic search query.
         max_results: Maximum results to return.
         source_type: Optional filter by source type.
+        session_id: Session ID for scoping.
 
     Returns:
         List of relevant findings.
@@ -64,18 +68,18 @@ async def retrieve_findings(
     if source_type:
         filter_metadata = {"source_type": source_type}
 
-    return await query(query_text, max_results, filter_metadata)
+    return await query(query_text, max_results, filter_metadata, session_id=session_id)
 
 
-async def get_memory_stats() -> dict:
+async def get_memory_stats(session_id: str = "default") -> dict:
     """Get statistics about the current memory store."""
-    return await get_stats()
+    return await get_stats(session_id=session_id)
 
 
-def reset_session():
+def reset_session(session_id: str = "default"):
     """
     Reset memory and citations for a new research session.
     Call this before starting a new research topic.
     """
-    reset_collection()
-    clear_citations()
+    reset_collection(session_id=session_id)
+    clear_citations(session_id=session_id)

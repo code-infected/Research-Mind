@@ -54,6 +54,7 @@ class AgentEvent:
 async def execute_research(
     questions: list[str],
     config: Optional[AgentConfig] = None,
+    session_id: str = "default",
 ) -> AsyncGenerator[AgentEvent, None]:
     """
     Execute research for a list of sub-questions.
@@ -63,6 +64,7 @@ async def execute_research(
     Args:
         questions: List of focused research sub-questions from the planner.
         config: Optional agent configuration.
+        session_id: Unique identifier for the research session (used for citation scoping).
 
     Yields:
         AgentEvent objects for each step of the research process.
@@ -74,6 +76,7 @@ async def execute_research(
     from tools.web_search import search as web_search
     from tools.web_reader import read_url
     from tools.arxiv_search import search_papers
+    from tools.pdf_reader import read_pdf
     from tools.summarizer import summarize
     from tools.memory_store import store as memory_store
     from tools.citation_tracker import add_citation
@@ -83,8 +86,10 @@ async def execute_research(
         data={"message": f"Starting research on {len(questions)} sub-questions"},
     )
 
+    # Cross-question URL deduplication — prevents re-reading same sources
+    seen_urls = set()
+
     for q_idx, question in enumerate(questions):
-        seen_urls = set()
         seen_content_hashes = set()
         tool_call_count = 0
         sources_read = 0
@@ -185,7 +190,7 @@ async def execute_research(
                         data={"source": title},
                     )
 
-                    summary_result = await summarize(content_text, max_length=600, focus=question)
+                    summary_result = await summarize(content_text, max_length=2000, focus=question)
                     tool_call_count += 1
                     sources_read += 1
                     summary_text = summary_result.get("summary", "")
@@ -207,6 +212,7 @@ async def execute_research(
                                 "source_title": title,
                                 "source_type": "web",
                             },
+                            session_id=session_id,
                         )
 
                         # Track citation
@@ -215,6 +221,7 @@ async def execute_research(
                             title=page_content.get("title", title),
                             excerpt=summary_text[:200],
                             source_type="web",
+                            session_id=session_id,
                         )
 
                         yield AgentEvent(
@@ -246,6 +253,7 @@ async def execute_research(
                     max_retries=2,
                     backoff=config.retry_backoff_seconds,
                 )
+                tool_call_count += 1
 
                 yield AgentEvent(
                     type="tool_result",
@@ -255,10 +263,24 @@ async def execute_research(
                 )
 
                 for paper in papers[:2]:
+                    if tool_call_count >= config.max_tool_calls_per_question:
+                        break
+                    if sources_read >= config.max_sources_per_question:
+                        break
+
                     paper_title = paper.get("title", "")
                     paper_url = paper.get("url", "")
+                    pdf_url = paper.get("pdf_url", "")
                     abstract = paper.get("abstract", "")
                     authors = paper.get("authors", [])
+
+                    if not paper_url:
+                        continue
+
+                    if paper_url in seen_urls:
+                        logging.warning(f"Skipping duplicate arXiv URL: {paper_url}")
+                        continue
+                    seen_urls.add(paper_url)
 
                     if abstract:
                         # Store paper finding in memory
@@ -278,6 +300,7 @@ async def execute_research(
                                 "source_title": paper_title,
                                 "source_type": "arxiv",
                             },
+                            session_id=session_id,
                         )
 
                         await add_citation(
@@ -286,6 +309,7 @@ async def execute_research(
                             excerpt=abstract[:200],
                             authors=authors,
                             source_type="arxiv",
+                            session_id=session_id,
                         )
 
                         yield AgentEvent(
@@ -299,6 +323,72 @@ async def execute_research(
                                 "authors": authors[:3],
                             },
                         )
+
+                    # ----- Step 3b: Read PDF if available -----
+                    if pdf_url and tool_call_count < config.max_tool_calls_per_question and sources_read < config.max_sources_per_question:
+                        yield AgentEvent(type="tool_start", tool="pdf_reader", question=question)
+                        try:
+                            pdf_data = await _retry(
+                                lambda u=pdf_url, m=config.max_pages_per_pdf: read_pdf(u, max_pages=m),
+                                max_retries=1,
+                                backoff=config.retry_backoff_seconds,
+                            )
+                            tool_call_count += 1
+
+                            chunks = pdf_data.get("chunks", [])
+                            if chunks:
+                                pdf_text = "\n\n".join(chunks[:3])
+                                pdf_summary = await summarize(pdf_text, max_length=2000, focus=question)
+                                tool_call_count += 1
+                                sources_read += 1
+                                summary_text = pdf_summary.get("summary", "")
+
+                                yield AgentEvent(
+                                    type="tool_result",
+                                    tool="pdf_reader",
+                                    question=question,
+                                    data={"pages": pdf_data.get("pages_extracted", 0), "chunks": len(chunks)},
+                                )
+
+                                if summary_text:
+                                    await memory_store(
+                                        content=f"Question: {question}\nPaper: {paper_title}\nURL: {pdf_url}\n\nFindings:\n{summary_text}",
+                                        metadata={
+                                            "question": question,
+                                            "source_url": pdf_url,
+                                            "source_title": paper_title,
+                                            "source_type": "pdf",
+                                        },
+                                        session_id=session_id,
+                                    )
+
+                                    await add_citation(
+                                        url=pdf_url,
+                                        title=paper_title,
+                                        excerpt=summary_text[:200],
+                                        authors=authors,
+                                        source_type="pdf",
+                                        session_id=session_id,
+                                    )
+
+                                    yield AgentEvent(
+                                        type="finding",
+                                        tool="pdf_reader",
+                                        question=question,
+                                        data={
+                                            "source": paper_title,
+                                            "url": pdf_url,
+                                            "type": "pdf",
+                                            "summary": summary_text,
+                                        },
+                                    )
+                        except Exception as e:
+                            yield AgentEvent(
+                                type="tool_error",
+                                tool="pdf_reader",
+                                question=question,
+                                data={"error": str(e), "url": pdf_url},
+                            )
 
             except Exception as e:
                 yield AgentEvent(

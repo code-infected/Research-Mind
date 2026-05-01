@@ -11,8 +11,8 @@ from datetime import datetime, timezone
 from typing import Optional
 
 
-# In-memory citation store (per-session)
-_citations: dict[str, dict] = {}
+# Session-scoped in-memory citation store
+_citations: dict[str, dict[str, dict]] = {}
 
 
 async def add_citation(
@@ -22,6 +22,7 @@ async def add_citation(
     authors: Optional[list[str]] = None,
     published_date: Optional[str] = None,
     source_type: str = "web",
+    session_id: str = "default",
 ) -> dict:
     """
     Add a source citation. Automatically deduplicates by URL.
@@ -40,11 +41,12 @@ async def add_citation(
     # Generate a stable ID from the URL
     url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
 
-    is_new = url_hash not in _citations
+    session_store = _citations.setdefault(session_id, {})
+    is_new = url_hash not in session_store
 
     if is_new:
-        citation_number = len(_citations) + 1
-        _citations[url_hash] = {
+        citation_number = len(session_store) + 1
+        session_store[url_hash] = {
             "id": url_hash,
             "number": citation_number,
             "url": url,
@@ -56,12 +58,12 @@ async def add_citation(
             "added_at": datetime.now(timezone.utc).isoformat(),
         }
     else:
-        citation_number = _citations[url_hash]["number"]
+        citation_number = session_store[url_hash]["number"]
         # Update excerpt if a new one is provided
-        if excerpt and not _citations[url_hash]["excerpt"]:
-            _citations[url_hash]["excerpt"] = excerpt
+        if excerpt and not session_store[url_hash]["excerpt"]:
+            session_store[url_hash]["excerpt"] = excerpt
 
-    citation = _citations[url_hash]
+    citation = session_store[url_hash]
     formatted = _format_citation(citation)
 
     return {
@@ -72,27 +74,33 @@ async def add_citation(
     }
 
 
-async def get_all_citations() -> list[dict]:
+async def get_all_citations(session_id: str = "default") -> list[dict]:
     """
-    Get all tracked citations, sorted by citation number.
+    Get all tracked citations for a session, sorted by citation number.
+
+    Args:
+        session_id: The research session identifier.
 
     Returns:
         A list of all citation dicts, ordered by number.
     """
-    return sorted(_citations.values(), key=lambda c: c["number"])
+    session_store = _citations.get(session_id, {})
+    return sorted(session_store.values(), key=lambda c: c["number"])
 
 
-async def get_bibliography(format: str = "markdown") -> str:
+async def get_bibliography(format: str = "markdown", session_id: str = "default") -> str:
     """
     Generate a formatted bibliography of all tracked sources.
 
     Args:
         format: Output format — 'markdown' (default) or 'plain'.
+        session_id: The research session identifier.
 
     Returns:
         A formatted string containing all citations as a bibliography.
     """
-    citations = sorted(_citations.values(), key=lambda c: c["number"])
+    session_store = _citations.get(session_id, {})
+    citations = sorted(session_store.values(), key=lambda c: c["number"])
 
     if not citations:
         return "No sources cited."
@@ -103,14 +111,15 @@ async def get_bibliography(format: str = "markdown") -> str:
         return _bibliography_plain(citations)
 
 
-async def get_citation_count() -> int:
-    """Get the number of unique citations tracked."""
-    return len(_citations)
+async def get_citation_count(session_id: str = "default") -> int:
+    """Get the number of unique citations tracked for a session."""
+    return len(_citations.get(session_id, {}))
 
 
-def clear_citations():
-    """Clear all citations (for starting a new research session)."""
-    _citations.clear()
+def clear_citations(session_id: str = "default"):
+    """Clear citations for a specific session (for starting a new research session)."""
+    if session_id in _citations:
+        _citations[session_id].clear()
 
 
 def _format_citation(citation: dict) -> str:

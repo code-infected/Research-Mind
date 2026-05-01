@@ -8,17 +8,25 @@ via Server-Sent Events (SSE).
 import sys
 import os
 import uuid
+import re
+import logging
 from datetime import datetime, timezone
+import time
 
 from fastapi import APIRouter, Depends, Request
+
+logger = logging.getLogger("researchmind")
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from slowapi.errors import RateLimitExceeded
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
+
+from backend.limiter import limiter
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "mcp-server"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from backend.database import get_db
+from backend.database import get_db, SessionLocal
 from backend.models import ResearchSession, Report, User
 from backend.stream import format_sse, format_sse_error, format_sse_done
 from backend.auth import get_current_user_id, get_or_create_user
@@ -38,8 +46,22 @@ class ResearchRequest(BaseModel):
     max_sub_questions: int = Field(5, ge=2, le=8, description="Number of sub-questions")
     include_arxiv: bool = Field(True, description="Include arXiv paper search")
 
+    @field_validator('topic', mode='before')
+    @classmethod
+    def sanitize_topic(cls, v: str) -> str:
+        """Sanitize research topic to prevent injection attacks while preserving valid research characters."""
+        v = v.strip()
+        # Remove null bytes and control characters
+        v = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', v)
+        # Remove common prompt-injection keywords (case-insensitive)
+        v = re.sub(r'(?i)(ignore previous instructions|system prompt|you are now|act as a|new role:|override)', '', v)
+        # Allow alphanumeric, spaces, and common research punctuation (including +, #, &, *, /, $, %, =, @, ~)
+        v = re.sub(r'[^\w\s\-\.,;:!?()\[\]"\'\u00C0-\u024F+#&*/$%=@~|<>{}^]', '', v)
+        return v[:500]  # Enforce max length
+
 
 @router.post("/research")
+@limiter.limit("10/minute")
 async def start_research(
     request_body: ResearchRequest,
     request: Request,
@@ -50,8 +72,11 @@ async def start_research(
 
     Events: plan → tool_start → tool_result → finding → report → done
     """
+    # Rate limiting: 10 requests per minute per IP (applied via @limiter.limit decorator)
+
     session_id = str(uuid.uuid4())
     report_id = str(uuid.uuid4())
+    start_time = time.monotonic()
 
     # Get authenticated user (optional — works without auth too)
     user_id = await get_current_user_id(request)
@@ -72,9 +97,14 @@ async def start_research(
     config.max_sub_questions = request_body.max_sub_questions
     config.include_arxiv = request_body.include_arxiv
 
+    # Close initial DB session - we'll use fresh sessions per operation in the generator
+    db.close()
+
     async def event_stream():
+        # Use session-per-operation to avoid holding connections during long research
+        local_db = SessionLocal()
         try:
-            reset_session()
+            reset_session(session_id=session_id)
 
             # Step 1: Plan
             yield format_sse("status", {"message": "Decomposing research topic..."})
@@ -91,11 +121,18 @@ async def start_research(
                 "sub_questions": questions,
             })
 
-            session.sub_questions = questions
-            db.commit()
+            # Update session with questions - short transaction
+            try:
+                session = local_db.query(ResearchSession).filter_by(id=session_id).first()
+                if session:
+                    session.sub_questions = questions
+                    local_db.commit()
+            except Exception as e:
+                local_db.rollback()
+                logger.warning(f"Failed to update session questions: {e}")
 
-            # Step 2: Execute research
-            async for event in execute_research(questions, config):
+            # Step 2: Execute research (this can take minutes)
+            async for event in execute_research(questions, config, session_id=session_id):
                 yield format_sse(event.type, event.to_dict())
 
             # Step 3: Synthesize report
@@ -105,35 +142,75 @@ async def start_research(
                 topic=request_body.topic,
                 questions=questions,
                 config=config,
+                session_id=session_id,
             )
+
+            duration_seconds = int(time.monotonic() - start_time)
+            duration_label = f"{duration_seconds // 60}M {duration_seconds % 60}S"
+
+            metadata = dict(result["metadata"]) if result.get("metadata") else {}
+            metadata.update({
+                "duration": duration_label,
+                "duration_seconds": duration_seconds,
+                "model": os.getenv("LLM_MODEL") or os.getenv("LLM_PROVIDER", ""),
+                "bibliography": result.get("bibliography_structured", []),
+            })
 
             yield format_sse("report", {
                 "report": result["report"],
-                "metadata": result["metadata"],
+                "metadata": metadata,
             })
 
-            # Save report to DB
-            report = Report(
-                id=report_id,
-                session_id=session_id,
-                content=result["report"],
-                bibliography=result["bibliography"],
-                sources_cited=result["metadata"]["sources_cited"],
-                findings_count=result["metadata"]["findings_used"],
-                word_count=result["metadata"]["word_count"],
-            )
-            db.add(report)
+            # Save report to DB - short transaction
+            try:
+                report = Report(
+                    id=report_id,
+                    session_id=session_id,
+                    content=result["report"],
+                    bibliography=result["bibliography"],
+                    sources_cited=result["metadata"]["sources_cited"],
+                    findings_count=result["metadata"]["findings_used"],
+                    word_count=result["metadata"]["word_count"],
+                )
+                local_db.add(report)
 
-            session.status = "completed"
-            session.completed_at = datetime.now(timezone.utc)
-            db.commit()
+                session = local_db.query(ResearchSession).filter_by(id=session_id).first()
+                if session:
+                    session.status = "completed"
+                    session.completed_at = datetime.now(timezone.utc)
+                local_db.commit()
 
-            yield format_sse_done(result["metadata"])
+                yield format_sse_done(result["metadata"])
+            except Exception as e:
+                local_db.rollback()
+                logger.error(f"Failed to save report: {e}")
+                yield format_sse_error(f"Failed to save report: {e}")
 
         except Exception as e:
-            session.status = "failed"
-            db.commit()
+            # Try to mark session as failed using existing connection first
+            try:
+                if local_db:
+                    local_db.rollback()
+                    session = local_db.query(ResearchSession).filter_by(id=session_id).first()
+                    if session:
+                        session.status = "failed"
+                        session.completed_at = datetime.now(timezone.utc)
+                        local_db.commit()
+            except Exception:
+                # Fallback to a fresh connection if local_db is broken
+                try:
+                    fail_db = SessionLocal()
+                    session = fail_db.query(ResearchSession).filter_by(id=session_id).first()
+                    if session:
+                        session.status = "failed"
+                        session.completed_at = datetime.now(timezone.utc)
+                        fail_db.commit()
+                    fail_db.close()
+                except Exception:
+                    pass
             yield format_sse_error(str(e))
+        finally:
+            local_db.close()
 
     return StreamingResponse(
         event_stream(),

@@ -10,6 +10,9 @@
   },
   "dependencies": {
     "@clerk/nextjs": "^5.2.14",
+    "@types/dompurify": "^3.0.5",
+    "clsx": "^2.1.1",
+    "dompurify": "^3.4.2",
     "dotenv": "^17.3.1",
     "framer-motion": "^12.38.0",
     "lucide-react": "^0.577.0",
@@ -17,7 +20,9 @@
     "react": "^18",
     "react-dom": "^18",
     "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1"
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1",
+    "tailwind-merge": "^3.5.0"
   },
   "devDependencies": {
     "@types/node": "^20",

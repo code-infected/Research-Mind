@@ -13,7 +13,6 @@ services:
       - .env
     volumes:
       - ./chroma_data:/app/chroma_data
-      - ./researchmind.db:/app/researchmind.db
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
       interval: 30s
@@ -28,7 +27,12 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://backend:8000
+      - NEXT_PUBLIC_BACKEND_URL=http://backend:8000
     depends_on:
       backend:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

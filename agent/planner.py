@@ -63,7 +63,8 @@ async def decompose_topic(
         )
         questions = _parse_questions(text)
         if questions:
-            return questions
+            # Enforce max_questions limit to prevent runaway research
+            return questions[:config.max_sub_questions]
     except Exception:
         pass
 
@@ -73,16 +74,24 @@ async def decompose_topic(
 
 def _parse_questions(text: str) -> list[str]:
     """Parse a JSON array of questions from LLM response text."""
+    cleaned = text.strip()
+
+    # Strip markdown code fences if present
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+        cleaned = cleaned.strip()
+
     # Try direct JSON parse
     try:
-        questions = json.loads(text.strip())
+        questions = json.loads(cleaned)
         if isinstance(questions, list):
             return [str(q) for q in questions if q]
     except json.JSONDecodeError:
         pass
 
     # Try extracting JSON array from text
-    match = re.search(r'\[.*\]', text, re.DOTALL)
+    match = re.search(r'\[.*\]', cleaned, re.DOTALL)
     if match:
         try:
             questions = json.loads(match.group())

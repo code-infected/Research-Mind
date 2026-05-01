@@ -41,8 +41,11 @@ async def _get_clerk_jwks() -> dict:
             detail="CLERK_FRONTEND_API not configured"
         )
 
+    # Strip protocol prefix if present (env var may contain full URL)
+    clerk_host = clerk_frontend_api.replace("https://", "").replace("http://", "").rstrip("/")
+
     # Clerk JWKS URL format
-    jwks_url = f"https://{clerk_frontend_api}/.well-known/jwks.json"
+    jwks_url = f"https://{clerk_host}/.well-known/jwks.json"
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         response = await client.get(jwks_url)
@@ -88,12 +91,19 @@ async def get_current_user_id(request: Request) -> Optional[str]:
         if not public_key:
             return None
 
-        # Verify and decode the token
+        # Verify and decode the token with proper validation
+        # Note: verify_aud=False because Clerk session tokens don't include audience claim
+        # The token is already validated via JWKS fetch and signature verification
         payload = jwt.decode(
             token,
             public_key,
             algorithms=["RS256"],
-            options={"verify_aud": False},
+            options={
+                "verify_aud": False,
+                "verify_exp": True,
+                "verify_iat": True,
+                "require": ["exp", "iat", "sub"],
+            },
         )
 
         return payload.get("sub")  # Clerk user ID
