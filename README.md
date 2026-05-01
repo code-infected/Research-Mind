@@ -32,9 +32,9 @@
                         │ SSE Stream (via API proxy routes)
 ┌───────────────────────┴──────────────────────────────────┐
 │                   FastAPI Backend                          │
-│   POST /research → Plan → Execute → Synthesize → Save     │
-│   GET  /history  → List sessions                          │
-│   GET  /report   → Fetch archived report                  │
+│   POST /api/research → Plan → Execute → Synthesize → Save     │
+│   GET  /api/history  → List sessions                          │
+│   GET  /api/report/{session_id} → Fetch archived report       │
 └───────────────────────┬──────────────────────────────────┘
                         │ MCP Tool Calls
 ┌───────────────────────┴──────────────────────────────────┐
@@ -79,7 +79,7 @@ Edit `.env` with your keys. You only need **one** LLM provider:
 | `GOOGLE_API_KEY` | Optional | Yes | [aistudio.google.com](https://aistudio.google.com) |
 
 > **Note:** If no `TAVILY_API_KEY` is set, web search falls back to DuckDuckGo (free, no key needed).
-> If no `DATABASE_URL` is set, research still works but sessions won't persist.
+> If no `DATABASE_URL` is set, the app falls back to a local SQLite database (`sqlite:///./researchmind.db`), so sessions/history still persist locally. For production or containerized deployments, configure a persistent PostgreSQL database such as Supabase.
 
 ### 3. Install & Run
 
@@ -160,7 +160,7 @@ Research-Mind/
 | **LLM** | LiteLLM — supports Groq, OpenRouter, Anthropic, Google Gemini |
 | **Vector DB** | ChromaDB (semantic memory) |
 | **Search** | Tavily API (primary), DuckDuckGo (fallback), arXiv API |
-| **Database** | PostgreSQL via Supabase |
+| **Database** | SQLite (default local) / PostgreSQL (Supabase) |
 | **Auth** | Clerk (JWT-based) |
 | **Deployment** | Docker Compose, Vercel (frontend), any cloud (backend) |
 
@@ -187,15 +187,16 @@ event: plan       → Sub-questions generated, session created
 event: status     → Agent working on question N
 event: tool_start → Tool invoked (web_search, summarizer, etc.)
 event: tool_result→ Tool returned data
+event: tool_error → Tool failed but the failure is surfaced as a tool event
 event: finding    → Source processed and stored
 event: report     → Final synthesized report with metadata
 event: done       → Research complete
-event: error      → Error occurred (with details)
+event: error      → Fatal stream/request error occurred (with details)
 ```
 
 ### `GET /api/history`
 
-List past research sessions (paginated, filtered by authenticated user).
+List past research sessions (paginated). If authenticated via Clerk, filters to the current user's sessions only. Unauthenticated requests return all sessions.
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
