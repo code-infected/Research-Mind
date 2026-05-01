@@ -212,18 +212,62 @@ Service health check — returns backend status and database connectivity.
 
 ## ⚙️ Configuration
 
-All configuration is via environment variables. Key settings:
+All configuration is via environment variables in `.env`. ResearchMind uses **[LiteLLM](https://docs.litellm.ai/)** under the hood, which means you can switch between 100+ LLM providers by changing a single env var — no code changes needed.
+
+### LLM Settings
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LLM_PROVIDER` | `groq` | LLM provider (groq, openrouter, anthropic, google) |
-| `LLM_MODEL` | `groq/llama-3.3-70b-versatile` | Model identifier (LiteLLM format) |
-| `LLM_FALLBACK_MODELS` | — | Comma-separated fallback model chain |
-| `MAX_SUB_QUESTIONS` | `5` | Number of sub-questions per research (2–8) |
-| `MAX_SOURCES_PER_QUESTION` | `3` | Sources to read per sub-question |
-| `MAX_TOOL_CALLS_PER_QUESTION` | `5` | Tool call budget per sub-question |
-| `REPORT_MAX_TOKENS` | `8192` | Max tokens for report generation |
+| `LLM_PROVIDER` | `groq` | Provider prefix for model resolution. Used when `LLM_MODEL` has no prefix. |
+| `LLM_MODEL` | `groq/llama-3.3-70b-versatile` | Primary model in LiteLLM format: `provider/model-name` |
+| `LLM_FALLBACK_MODELS` | *(empty)* | Comma-separated fallback chain, tried in order if primary fails |
+| `LLM_TEMPERATURE` | `0.4` | Sampling temperature (0.0–1.0) |
+| `LLM_MAX_TOKENS` | `4096` | Max output tokens for general LLM calls |
+| `REPORT_MAX_TOKENS` | `8192` | Max output tokens for report synthesis |
+
+**Model string format:** Always use `provider/model-name`, e.g.:
+- `groq/llama-3.3-70b-versatile`
+- `gemini/gemini-2.0-flash`
+- `openrouter/google/gemini-2.0-flash-exp:free`
+- `anthropic/claude-sonnet-4-20250514`
+
+**Example — switch to Gemini:**
+```env
+LLM_PROVIDER=gemini
+LLM_MODEL=gemini/gemini-2.0-flash
+GOOGLE_API_KEY=your-key-here
+```
+
+### API Keys
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `GROQ_API_KEY` | ✅ (if using Groq) | [console.groq.com](https://console.groq.com) — fast, generous free tier |
+| `GOOGLE_API_KEY` | If using Gemini | [aistudio.google.com](https://aistudio.google.com) — free tier |
+| `OPENROUTER_API_KEY` | If using OpenRouter | [openrouter.ai](https://openrouter.ai) — access to many free models |
+| `ANTHROPIC_API_KEY` | If using Claude | [console.anthropic.com](https://console.anthropic.com) |
+| `TAVILY_API_KEY` | Optional | [tavily.com](https://tavily.com) — optimized for agents. Falls back to DuckDuckGo if missing |
+
+### Research Settings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MAX_SUB_QUESTIONS` | `5` | Sub-questions generated per research topic (2–8) |
+| `MAX_SOURCES_PER_QUESTION` | `3` | Max unique sources to read per sub-question |
+| `MAX_TOOL_CALLS_PER_QUESTION` | `5` | Tool call budget per sub-question (prevents infinite loops) |
 | `MAX_REPORT_LENGTH` | `15000` | Max report length in characters |
+| `INCLUDE_ARXIV` | `true` | Enable/disable arXiv academic paper search |
+| `CHROMA_DB_PATH` | `./chroma_data` | Local path for ChromaDB vector storage |
+
+### Infrastructure
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | *(none)* | PostgreSQL connection string (Supabase recommended) |
+| `CLERK_FRONTEND_API` | *(none)* | Clerk auth domain URL |
+| `CLERK_SECRET_KEY` | *(none)* | Clerk backend secret key |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | *(none)* | Clerk frontend publishable key |
+| `NEXT_PUBLIC_BACKEND_URL` | `http://localhost:8000` | Backend URL for the Next.js frontend proxy |
 
 ## 🤝 Contributing
 
